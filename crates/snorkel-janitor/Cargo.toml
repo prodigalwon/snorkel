@@ -1,0 +1,15 @@
+[package]
+name = "snorkel-janitor"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "snorkel-janitor"
+path = "src/main.rs"
+
+[dependencies]
+snorkel-common = { path = "../snorkel-common" }
+snorkel-janitor-core = { path = "../snorkel-janitor-core" }
+
+[lints]
+workspace = true

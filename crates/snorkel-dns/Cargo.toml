@@ -1,0 +1,19 @@
+[package]
+name = "snorkel-dns"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "snorkel-dns"
+path = "src/main.rs"
+
+[dependencies]
+snorkel-common = { path = "../snorkel-common" }
+socket2 = { version = "0.5", features = ["all"] }
+core_affinity = "0.8"
+ureq = { version = "3", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true
