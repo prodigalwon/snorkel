@@ -5,6 +5,7 @@ members = [
     "crates/snorkel-dns",
     "crates/snorkel-janitor",
     "crates/snorkel-janitor-core",
+    "crates/snorkel-sync",
 ]
 
 [workspace.package]
