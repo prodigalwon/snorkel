@@ -26,6 +26,7 @@ mod checkpoint;
 mod courier;
 mod rules;
 mod store;
+mod verify;
 mod wire;
 
 use std::path::PathBuf;

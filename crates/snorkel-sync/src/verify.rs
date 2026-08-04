@@ -1,0 +1,384 @@
+//! GRANDPA justification verification (SYNC-CONTRACT.md D1).
+//!
+//! Grounded against the Rostro fork 2026-08-03. The finality scheme is
+//! `rostro_hybrid` = **ed25519 + SLH-DSA-SHA2-128s, both-must-verify**
+//! (memory's "ML-DSA" was wrong; corrected here). A precommit vote is
+//! signed over:
+//!
+//! ```text
+//! domain  = b"rostro/finality-vote/hybrid/v1"   (FINALITY_VOTE_DOMAIN)
+//! message = (Message::Precommit(precommit), round, set_id).encode()
+//! ```
+//!
+//! where `Message` is finality-grandpa's enum (Prevote=0, Precommit=1,
+//! PrimaryPropose=2) so the payload begins with the byte `0x01`, and
+//! `precommit = { target_hash: H256, target_number: u32 }`.
+//!
+//! A justification finalizes its commit target iff precommits from a
+//! set of distinct authorities whose summed weight is **> 2/3 of total
+//! weight** each verify over that payload. Byte layout of the wire
+//! justification is mirrored locally (contract discipline: no `sp-*`
+//! graph), decoding only the prefix we need — `round` + `commit` —
+//! and ignoring the trailing `votes_ancestries` header list.
+//!
+//! ## Conservative target rule
+//!
+//! We require every counted precommit to target the commit target hash
+//! DIRECTLY, rather than validating the ancestry proof that lets a
+//! precommit target a descendant. Honest voters don't vote past
+//! set-change blocks, so real justifications satisfy this; the rule can
+//! only reject unusual-but-valid justifications, never accept a bad
+//! one — the safe direction. Revisit if a legitimate justification is
+//! ever seen to fail it.
+//!
+//! ## Crypto sourcing: DEFERRED DECISION (behind [`HybridVerify`])
+//!
+//! The actual both-must-verify primitive lives in Rostro's KAT-pinned
+//! `rostro-hybrid-sig` (Apache-2.0), which itself path-depends on the
+//! vendored `slh-dsa`. Wiring that into this separate repo is a
+//! supply-chain choice (git dep to Rostro / publish the two crates /
+//! vendor with a KAT-sync check) that shapes how the whole verifier SDK
+//! ships — the user's call. Until then the quorum logic (where the bugs
+//! hide) is complete and tested against this trait.
+
+use parity_scale_codec::{Compact, Decode, Input};
+
+use crate::wire::H256;
+
+/// The exact finality-vote domain the keystore signs under
+/// (`rostro-hybrid-sig::FINALITY_VOTE_DOMAIN`). Duplicated as a byte
+/// literal deliberately: a mismatch must fail loudly in tests, not
+/// silently import a changed value.
+pub const FINALITY_VOTE_DOMAIN: &[u8] = b"rostro/finality-vote/hybrid/v1";
+
+pub const HYBRID_PK_BYTES: usize = 64;
+pub const HYBRID_SIG_BYTES: usize = 7920;
+
+/// The both-must-verify hybrid primitive, abstracted so the quorum
+/// logic is testable without the (cross-repo) crypto crates. The
+/// production impl forwards to `rostro-hybrid-sig`.
+pub trait HybridVerify {
+    /// `true` iff BOTH ed25519 and SLH-DSA verify `sig` over `msg`
+    /// under `domain` for `public`. Any malformed input → `false`.
+    fn verify(&self, public: &[u8], domain: &[u8], msg: &[u8], sig: &[u8]) -> bool;
+}
+
+/// A single authority in the active set: hybrid public key + weight.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Authority {
+    pub public: Vec<u8>,
+    pub weight: u64,
+}
+
+/// Locally-mirrored precommit (`finality_grandpa::Precommit`).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Precommit {
+    pub target_hash: H256,
+    pub target_number: u32,
+}
+
+/// One signed precommit from the commit.
+#[derive(Clone, Debug)]
+pub struct SignedPrecommit {
+    pub precommit: Precommit,
+    pub signature: Vec<u8>,
+    pub id: Vec<u8>,
+}
+
+/// The commit prefix we verify (`round` + commit target + precommits).
+#[derive(Clone, Debug)]
+pub struct Commit {
+    pub round: u64,
+    pub target_hash: H256,
+    pub target_number: u32,
+    pub precommits: Vec<SignedPrecommit>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum VerifyError {
+    Decode(String),
+    /// Summed weight of valid distinct-authority precommits did not
+    /// exceed 2/3 of total set weight.
+    InsufficientWeight { got: u128, needed: u128 },
+    /// The justification's commit target is not the block we asked
+    /// about.
+    WrongTarget,
+    /// Total set weight is zero — an empty/broken authority set.
+    EmptySet,
+}
+
+fn read_h256<I: Input>(input: &mut I) -> Result<H256, VerifyError> {
+    let mut h = [0u8; 32];
+    input.read(&mut h).map_err(|e| VerifyError::Decode(format!("h256: {e}")))?;
+    Ok(h)
+}
+
+fn read_bytes<I: Input>(input: &mut I, n: usize) -> Result<Vec<u8>, VerifyError> {
+    let mut v = vec![0u8; n];
+    input.read(&mut v).map_err(|e| VerifyError::Decode(format!("bytes[{n}]: {e}")))?;
+    Ok(v)
+}
+
+/// Decode the justification PREFIX: `round: u64`, then
+/// `commit { target_hash, target_number, precommits: Vec<SignedPrecommit> }`.
+/// The trailing `votes_ancestries: Vec<Header>` is intentionally not
+/// read (we don't need it under the conservative target rule, and
+/// decoding it would require the chain's Header layout).
+pub fn decode_commit(justification: &[u8]) -> Result<Commit, VerifyError> {
+    let mut input = justification;
+    let round =
+        u64::decode(&mut input).map_err(|e| VerifyError::Decode(format!("round: {e}")))?;
+    let target_hash = read_h256(&mut input)?;
+    let target_number =
+        u32::decode(&mut input).map_err(|e| VerifyError::Decode(format!("target_number: {e}")))?;
+    let count = u32::from(
+        Compact::<u32>::decode(&mut input)
+            .map_err(|e| VerifyError::Decode(format!("precommit count: {e}")))?
+            .0,
+    );
+    let mut precommits = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let ph = read_h256(&mut input)?;
+        let pn = u32::decode(&mut input)
+            .map_err(|e| VerifyError::Decode(format!("precommit number: {e}")))?;
+        let signature = read_bytes(&mut input, HYBRID_SIG_BYTES)?;
+        let id = read_bytes(&mut input, HYBRID_PK_BYTES)?;
+        precommits.push(SignedPrecommit {
+            precommit: Precommit { target_hash: ph, target_number: pn },
+            signature,
+            id,
+        });
+    }
+    Ok(Commit { round, target_hash, target_number, precommits })
+}
+
+/// The exact bytes a precommit is signed over:
+/// `(Message::Precommit(precommit), round, set_id).encode()`.
+/// `Message::Precommit` is enum variant index 1, so the buffer opens
+/// with `0x01`.
+pub fn vote_payload(precommit: &Precommit, round: u64, set_id: u64) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(1 + 32 + 4 + 8 + 8);
+    buf.push(0x01); // Message::Precommit discriminant
+    buf.extend_from_slice(&precommit.target_hash);
+    buf.extend_from_slice(&precommit.target_number.to_le_bytes());
+    buf.extend_from_slice(&round.to_le_bytes());
+    buf.extend_from_slice(&set_id.to_le_bytes());
+    buf
+}
+
+/// Verify a justification finalizes `(expected_hash, expected_number)`
+/// under `authorities`/`set_id`. Returns `Ok(())` on a >2/3 weight of
+/// valid, distinct-authority precommits all targeting the commit
+/// target, which must equal the expected block.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_justification<V: HybridVerify>(
+    verifier: &V,
+    justification: &[u8],
+    set_id: u64,
+    authorities: &[Authority],
+    expected_hash: &H256,
+    expected_number: u32,
+) -> Result<(), VerifyError> {
+    let total_weight: u128 = authorities.iter().map(|a| u128::from(a.weight)).sum();
+    if total_weight == 0 {
+        return Err(VerifyError::EmptySet);
+    }
+
+    let commit = decode_commit(justification)?;
+    if &commit.target_hash != expected_hash || commit.target_number != expected_number {
+        return Err(VerifyError::WrongTarget);
+    }
+
+    // > 2/3 total weight, integer-exact: got * 3 > total * 2.
+    let needed_strictly_above = total_weight.saturating_mul(2);
+
+    let mut counted: u128 = 0;
+    let mut seen: Vec<&[u8]> = Vec::new();
+    for sp in &commit.precommits {
+        // Conservative target rule: only precommits on the commit
+        // target itself are counted.
+        if sp.precommit.target_hash != commit.target_hash
+            || sp.precommit.target_number != commit.target_number
+        {
+            continue;
+        }
+        // Find the authority; skip unknown ids (a courier can pad the
+        // list with garbage, it just doesn't count).
+        let Some(auth) = authorities.iter().find(|a| a.public.as_slice() == sp.id.as_slice())
+        else {
+            continue;
+        };
+        // One vote per authority: ignore duplicates.
+        if seen.iter().any(|s| *s == sp.id.as_slice()) {
+            continue;
+        }
+        let payload = vote_payload(&sp.precommit, commit.round, set_id);
+        if !verifier.verify(&sp.id, FINALITY_VOTE_DOMAIN, &payload, &sp.signature) {
+            continue;
+        }
+        seen.push(sp.id.as_slice());
+        counted = counted.saturating_add(u128::from(auth.weight));
+    }
+
+    if counted.saturating_mul(3) > needed_strictly_above {
+        Ok(())
+    } else {
+        Err(VerifyError::InsufficientWeight {
+            got: counted,
+            needed: needed_strictly_above / 3 + 1,
+        })
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use parity_scale_codec::Encode;
+
+    /// A test verifier that "accepts" a signature iff it equals the
+    /// authority id repeated (a deterministic stand-in for a real
+    /// hybrid sig). Lets the quorum logic be exercised exactly.
+    struct MockVerify;
+    impl HybridVerify for MockVerify {
+        fn verify(&self, public: &[u8], domain: &[u8], _msg: &[u8], sig: &[u8]) -> bool {
+            domain == FINALITY_VOTE_DOMAIN && !public.is_empty() && sig == good_sig(public)
+        }
+    }
+
+    fn good_sig(id: &[u8]) -> Vec<u8> {
+        let mut s = vec![0u8; HYBRID_SIG_BYTES];
+        s[..id.len().min(HYBRID_SIG_BYTES)]
+            .copy_from_slice(&id[..id.len().min(HYBRID_SIG_BYTES)]);
+        s
+    }
+
+    fn auth(id_byte: u8, weight: u64) -> Authority {
+        Authority { public: vec![id_byte; HYBRID_PK_BYTES], weight }
+    }
+
+    /// Build a wire justification with the given precommits, matching
+    /// the fork's SCALE layout (round, target, Vec<SignedPrecommit>,
+    /// then an empty votes_ancestries).
+    fn build(
+        round: u64,
+        target: H256,
+        number: u32,
+        votes: &[(u8, bool)], // (authority id byte, sign-correctly?)
+    ) -> Vec<u8> {
+        let mut buf = Vec::new();
+        round.encode_to(&mut buf);
+        buf.extend_from_slice(&target);
+        number.encode_to(&mut buf);
+        Compact(votes.len() as u32).encode_to(&mut buf);
+        for (idb, ok) in votes {
+            buf.extend_from_slice(&target);
+            number.encode_to(&mut buf);
+            let id = vec![*idb; HYBRID_PK_BYTES];
+            let sig = if *ok { good_sig(&id) } else { vec![0xFFu8; HYBRID_SIG_BYTES] };
+            buf.extend_from_slice(&sig);
+            buf.extend_from_slice(&id);
+        }
+        // votes_ancestries: empty Vec<Header> — ignored by the decoder,
+        // present for realism.
+        Compact(0u32).encode_to(&mut buf);
+        buf
+    }
+
+    fn set4() -> Vec<Authority> {
+        vec![auth(1, 1), auth(2, 1), auth(3, 1), auth(4, 1)]
+    }
+
+    #[test]
+    fn three_of_four_finalizes() {
+        let target = [7u8; 32];
+        let j = build(9, target, 100, &[(1, true), (2, true), (3, true)]);
+        assert!(verify_justification(&MockVerify, &j, 5, &set4(), &target, 100).is_ok());
+    }
+
+    #[test]
+    fn exactly_two_of_four_is_not_enough() {
+        // 2/4 = 50% is not > 2/3.
+        let target = [7u8; 32];
+        let j = build(9, target, 100, &[(1, true), (2, true)]);
+        assert!(matches!(
+            verify_justification(&MockVerify, &j, 5, &set4(), &target, 100),
+            Err(VerifyError::InsufficientWeight { .. })
+        ));
+    }
+
+    #[test]
+    fn bad_signatures_dont_count() {
+        let target = [7u8; 32];
+        let j = build(9, target, 100, &[(1, true), (2, false), (3, false)]);
+        assert!(matches!(
+            verify_justification(&MockVerify, &j, 5, &set4(), &target, 100),
+            Err(VerifyError::InsufficientWeight { got, .. }) if got == 1
+        ));
+    }
+
+    #[test]
+    fn duplicate_authority_counts_once() {
+        let target = [7u8; 32];
+        // authority 1 votes three times; only one counts → 1/4, not enough.
+        let j = build(9, target, 100, &[(1, true), (1, true), (1, true)]);
+        assert!(matches!(
+            verify_justification(&MockVerify, &j, 5, &set4(), &target, 100),
+            Err(VerifyError::InsufficientWeight { got, .. }) if got == 1
+        ));
+    }
+
+    #[test]
+    fn unknown_authority_is_ignored() {
+        let target = [7u8; 32];
+        // id 9 is not in the set; ids 1,2 are. 2/4 → not enough,
+        // proving the stranger didn't count.
+        let j = build(9, target, 100, &[(1, true), (2, true), (9, true)]);
+        assert!(matches!(
+            verify_justification(&MockVerify, &j, 5, &set4(), &target, 100),
+            Err(VerifyError::InsufficientWeight { got, .. }) if got == 2
+        ));
+    }
+
+    #[test]
+    fn wrong_target_rejected() {
+        let target = [7u8; 32];
+        let other = [8u8; 32];
+        let j = build(9, target, 100, &[(1, true), (2, true), (3, true)]);
+        assert_eq!(
+            verify_justification(&MockVerify, &j, 5, &set4(), &other, 100),
+            Err(VerifyError::WrongTarget)
+        );
+    }
+
+    #[test]
+    fn weighted_supermajority() {
+        // One heavy authority (weight 10) + three light (weight 1):
+        // total 13, need > 8.67. The heavy alone (10) suffices.
+        let set = vec![auth(1, 10), auth(2, 1), auth(3, 1), auth(4, 1)];
+        let target = [7u8; 32];
+        let j = build(9, target, 100, &[(1, true)]);
+        assert!(verify_justification(&MockVerify, &j, 5, &set, &target, 100).is_ok());
+    }
+
+    #[test]
+    fn empty_set_rejected() {
+        let target = [7u8; 32];
+        let j = build(9, target, 100, &[]);
+        assert_eq!(
+            verify_justification(&MockVerify, &j, 5, &[], &target, 100),
+            Err(VerifyError::EmptySet)
+        );
+    }
+
+    #[test]
+    fn payload_opens_with_precommit_discriminant() {
+        let p = Precommit { target_hash: [3u8; 32], target_number: 42 };
+        let payload = vote_payload(&p, 9, 5);
+        assert_eq!(payload[0], 0x01, "Message::Precommit variant index");
+        assert_eq!(&payload[1..33], &[3u8; 32]);
+        assert_eq!(&payload[33..37], &42u32.to_le_bytes());
+        assert_eq!(&payload[37..45], &9u64.to_le_bytes());
+        assert_eq!(&payload[45..53], &5u64.to_le_bytes());
+    }
+}
