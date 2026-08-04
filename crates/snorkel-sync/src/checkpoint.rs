@@ -20,13 +20,7 @@ type Blake2b256 = Blake2b<U32>;
 /// this struct is client-persisted state, not wire).
 pub const CHECKPOINT_FORMAT: u16 = 1;
 
-/// One authority: hybrid-PQ public key bytes (opaque here; the
-/// verifier interprets them) + voting weight.
-#[derive(Encode, Decode, Clone, PartialEq, Eq, Debug)]
-pub struct Authority {
-    pub public: Vec<u8>,
-    pub weight: u64,
-}
+pub use crate::verify::Authority;
 
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug)]
 pub struct Checkpoint {

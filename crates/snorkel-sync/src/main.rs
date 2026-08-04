@@ -1,31 +1,37 @@
 //! # snorkel-sync
 //!
-//! Checkpoint finality-follower and verified replica maintainer for
-//! the Rostro resolution sync spec (SYNC-SPEC.md). One of the
-//! three snorkel processes; the quarantine zone for every
-//! chain-adjacent dependency (snorkel-dns stays lean and serves only
-//! from the local store).
+//! Checkpoint finality-follower for the Rostro resolution sync spec
+//! (SYNC-SPEC.md). One of the three snorkel processes; the quarantine
+//! zone for every chain-adjacent dependency, so `snorkel-dns` stays
+//! lean and serves only from the local store.
 //!
-//! ## v0 status: OBSERVE MODE
+//! ## What it does each heartbeat
 //!
-//! The justification verifier now works (`verify` + `hybrid`, proven
-//! against a real justification from a running node), but the follow
-//! loop that adopts anchors and rolls the checkpoint is not wired yet.
-//! Until it is, this binary deliberately REFUSES to advance the trust
-//! checkpoint:
-//! it handshakes (version gate enforced), polls the finalized head on
-//! the heartbeat, evaluates client rules 2/3 against the held
-//! checkpoint, logs what it would do — and stops short of adoption,
-//! loudly, every cycle. Wiring `verify::justification()` (next) is
-//! what flips observe mode into the real loop; nothing else changes
-//! shape. An observe-mode process serves nothing and invalidates
-//! nothing.
+//! 1. Handshake (spec-version gate, genesis check).
+//! 2. Ask the courier for its finalized head.
+//! 3. Ask for that height's justification.
+//! 4. Hash the header ourselves, require the justification to be for
+//!    that hash, and verify it against the authority set we hold.
+//! 5. Only then roll the checkpoint forward, in one store transaction.
 //!
-//! Deployment knob (env): `SNORKEL_STORE` — store path, default
-//! `./snorkel-sync.redb`.
+//! Nothing the courier says is taken on trust: not the block hash, not
+//! the height, not the authority set. See `follow.rs` for why step 4
+//! computes the hash instead of accepting one.
+//!
+//! ## No trust on first use
+//!
+//! The loop needs a starting authority set, and taking that from the
+//! courier would defeat the whole exercise. So the checkpoint comes
+//! from the store, or from a file named by `SNORKEL_CHECKPOINT`, or the
+//! process refuses to start. There is deliberately no path that
+//! bootstraps trust from whatever the node happens to say.
+//!
+//! Env: `SNORKEL_STORE` (default `./snorkel-sync.redb`),
+//! `SNORKEL_CHECKPOINT` (SCALE checkpoint file, first run only).
 
 mod checkpoint;
 mod courier;
+mod follow;
 mod hybrid;
 mod proof;
 mod rules;
@@ -36,15 +42,17 @@ mod wire;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use checkpoint::Checkpoint;
 use courier::Courier;
-use rules::{judge_anchor, serve_state, AnchorVerdict, ServeState, HEARTBEAT_BLOCKS};
+use follow::{evaluate_candidate, Refusal};
+use hybrid::HybridVerifier;
+use rules::{serve_state, ServeState, HEARTBEAT_BLOCKS};
 use store::Store;
 
 /// The localsnorkel invariant: the courier is the node on this box.
-/// Deliberately not configurable (see snorkel-dns/src/main.rs).
 const RPC_URL: &str = "http://127.0.0.1:9944";
 
-/// Poll cadence in seconds: heartbeat = k/4 blocks at ~6s blocks.
+/// Poll cadence: heartbeat = k/4 blocks at ~6s blocks.
 const HEARTBEAT_SECS: u64 = HEARTBEAT_BLOCKS * 6;
 
 fn main() {
@@ -54,86 +62,150 @@ fn main() {
 
     let store = match Store::open(&store_path) {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("snorkel-sync: cannot open store {}: {e}", store_path.display());
-            std::process::exit(1);
-        }
+        Err(e) => fatal(&format!("cannot open store {}: {e}", store_path.display())),
     };
 
-    let held = match store.checkpoint() {
-        Ok(Some(c)) => {
-            println!(
-                "snorkel-sync: resuming from persisted checkpoint height={} set_id={}",
-                c.height, c.set_id
-            );
-            Some(c)
-        }
-        Ok(None) => {
-            println!(
-                "snorkel-sync: fresh store (no release-baked checkpoint wired yet); \
-                 observe mode only"
-            );
-            None
-        }
-        Err(e) => {
-            // A corrupt/tampered checkpoint is an alarm, not a shrug:
-            // refuse to run rather than silently re-baseline.
-            eprintln!("snorkel-sync: persisted checkpoint REJECTED: {e}");
-            eprintln!("snorkel-sync: refusing to start; move the store aside to re-baseline");
-            std::process::exit(1);
-        }
+    let mut held = match load_checkpoint(&store) {
+        Ok(c) => c,
+        Err(e) => fatal(&e),
     };
+    println!(
+        "snorkel-sync: trust base height={} set_id={} authorities={}",
+        held.height,
+        held.set_id,
+        held.authorities.len()
+    );
 
     let courier = Courier::new(RPC_URL);
 
     loop {
-        cycle(&courier, held.as_ref());
+        if let Some(next) = cycle(&courier, &store, &held) {
+            held = next;
+        }
         std::thread::sleep(Duration::from_secs(HEARTBEAT_SECS));
     }
 }
 
-fn cycle(courier: &Courier, held: Option<&checkpoint::Checkpoint>) {
+/// Store first, then the supplied file. Never the courier.
+fn load_checkpoint(store: &Store) -> Result<Checkpoint, String> {
+    match store.checkpoint() {
+        Ok(Some(c)) => return Ok(c),
+        // A corrupt persisted checkpoint is an alarm, not a prompt to
+        // re-baseline from whatever happens to be reachable.
+        Err(e) => return Err(format!("persisted checkpoint REJECTED: {e}")),
+        Ok(None) => {}
+    }
+    let path = std::env::var("SNORKEL_CHECKPOINT").map_err(|_| {
+        "no checkpoint: the store is empty and SNORKEL_CHECKPOINT is unset. \
+         Refusing to start rather than trusting the courier for an initial \
+         authority set."
+            .to_string()
+    })?;
+    let bytes = std::fs::read(&path).map_err(|e| format!("reading {path}: {e}"))?;
+    let c = Checkpoint::load(&bytes)?;
+    store.put_checkpoint(&c)?;
+    println!("snorkel-sync: adopted release checkpoint from {path}");
+    Ok(c)
+}
+
+/// One heartbeat. Returns the new checkpoint if a head was verified and
+/// adopted.
+fn cycle(courier: &Courier, store: &Store, held: &Checkpoint) -> Option<Checkpoint> {
     let info = match courier.handshake() {
         Ok(i) => i,
         Err(e) => {
-            eprintln!("snorkel-sync: handshake failed: {e:?} (alarm; retrying on heartbeat)");
-            return;
+            eprintln!("snorkel-sync: handshake failed: {e:?} — alarm, retrying next heartbeat");
+            return None;
         }
     };
+    if info.genesis_hash != held.genesis_hash {
+        eprintln!("snorkel-sync: courier is on a DIFFERENT CHAIN (genesis mismatch) — refusing");
+        return None;
+    }
 
     let head = match courier.finalized() {
         Ok(h) => h,
         Err(e) => {
             eprintln!("snorkel-sync: finalized poll failed: {e:?}");
-            return;
+            return None;
         }
     };
 
-    // Rules 2/3 evaluated against the held checkpoint. The "verified
-    // head" is the checkpoint height itself until the justification
-    // verifier lands — the honest number, since nothing newer has been
-    // verified.
-    let held_height = held.map(|c| c.height).unwrap_or(0);
-    let verified_head = held_height;
-    let verdict = judge_anchor(held_height, verified_head, head.height);
-    let freshness = serve_state(verified_head, held_height);
-
-    println!(
-        "snorkel-sync[observe]: courier finalized={} (spec {:#x}, schema {}) \
-         held={held_height} verdict={verdict:?} freshness={freshness:?} — \
-         NOT adopting: follow loop not wired yet",
-        head.height, info.spec_version, info.schema_version,
-    );
-
-    if matches!(verdict, AnchorVerdict::AboveVerifiedHead) {
-        // Expected in observe mode: everything the courier offers is
-        // above what we've verified, because we verify nothing yet.
-        // The log line above is the alarm.
+    if head.height <= held.height {
+        report_freshness(held.height, held.height);
+        return None;
     }
-    if matches!(freshness, ServeState::StaleAlarm) {
+
+    // Justifications are only STORED periodically, so the head usually
+    // has none. Fall back to the most recent cadence point the courier
+    // advertises, which is where one is guaranteed to exist.
+    let cadence = u64::from(info.retention.justification_cadence.max(1));
+    let candidates: Vec<u64> = [head.height, (head.height / cadence) * cadence, 1]
+        .into_iter()
+        .filter(|h| *h > held.height)
+        .collect();
+
+    let mut candidate = None;
+    for h in candidates {
+        if let Ok(j) = courier.justification(h) {
+            candidate = Some(j);
+            break;
+        }
+    }
+    let Some(candidate) = candidate else {
+        println!(
+            "snorkel-sync: head={} but no justification available at or below it \
+             (cadence {cadence}); holding anchor at {}",
+            head.height, held.height
+        );
+        report_freshness(head.height, held.height);
+        return None;
+    };
+
+    match evaluate_candidate(held, &HybridVerifier, &candidate.header, &candidate.justification) {
+        Ok(adoption) => {
+            let next = adoption.advance(held);
+            // Rule 6: the checkpoint advance commits in ONE transaction.
+            // Replica writes join this transaction when they land.
+            if let Err(e) = store.put_checkpoint(&next) {
+                eprintln!("snorkel-sync: checkpoint persist FAILED: {e} — not advancing");
+                return None;
+            }
+            println!(
+                "snorkel-sync: VERIFIED and adopted height {} (was {})",
+                next.height, held.height
+            );
+            report_freshness(next.height, next.height);
+            Some(next)
+        }
+        Err(Refusal::Unverified { set_id, err }) => {
+            eprintln!(
+                "snorkel-sync: justification for height {} did NOT verify under set {set_id} \
+                 ({err:?}) — either an authority-set change we have not walked, or a lying \
+                 courier. Not advancing.",
+                head.height
+            );
+            report_freshness(head.height, held.height);
+            None
+        }
+        Err(r) => {
+            eprintln!("snorkel-sync: refused height {}: {r:?}", head.height);
+            report_freshness(head.height, held.height);
+            None
+        }
+    }
+}
+
+fn report_freshness(verified_head: u64, anchor: u64) {
+    if matches!(serve_state(verified_head, anchor), ServeState::StaleAlarm) {
         eprintln!(
-            "snorkel-sync: held checkpoint is stale past the recency bound; \
-             a verifying build would stop serving here"
+            "snorkel-sync: anchor {anchor} is stale past the recency bound \
+             (head {verified_head}) — a serving build would stop answering here"
         );
     }
+}
+
+fn fatal(msg: &str) -> ! {
+    eprintln!("snorkel-sync: {msg}");
+    std::process::exit(1);
 }

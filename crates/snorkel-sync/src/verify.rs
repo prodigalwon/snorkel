@@ -42,7 +42,7 @@
 //! (`hybrid.rs`) and a real justification from a running node
 //! (`live_fixture_tests` below).
 
-use parity_scale_codec::{Compact, Decode, Input};
+use parity_scale_codec::{Compact, Decode, Encode, Input};
 
 use crate::wire::H256;
 
@@ -65,7 +65,11 @@ pub trait HybridVerify {
 }
 
 /// A single authority in the active set: hybrid public key + weight.
-#[derive(Clone, PartialEq, Eq, Debug)]
+///
+/// One type, used both for verification and for the persisted
+/// checkpoint — two structurally identical `Authority` types would be
+/// an invitation to convert between them and lose a field.
+#[derive(Clone, PartialEq, Eq, Debug, Encode, Decode)]
 pub struct Authority {
     pub public: Vec<u8>,
     pub weight: u64,

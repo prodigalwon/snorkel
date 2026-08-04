@@ -14,11 +14,15 @@
 //! codebase that builds from crates.io alone. Both primitives come
 //! from the same upstream crates the chain uses:
 //!
-//! - `ed25519-dalek` 2.x — stock.
-//! - `slh-dsa` 0.1.0 — stock; Rostro vendors this crate *verbatim*
-//!   from the crates.io tarball (its `VENDOR.md` records the pinned
-//!   sha256 and states no modifications), so pulling it from crates.io
-//!   here is byte-for-byte the same implementation.
+//! - `ed25519-dalek` 2.x — stock from crates.io.
+//! - `slh-dsa` 0.1.0 — vendored at `external/slh-dsa`. Vendoring is
+//!   forced, not preferred: upstream 0.1.0 pins a PRE-RELEASE of the
+//!   `signature` trait crate, which Cargo cannot unify with the stable
+//!   `signature 2.x` that `ed25519-dalek` resolves. Stock versions of
+//!   the two crates cannot coexist in one graph, and a hybrid scheme
+//!   needs both. Rostro hit the same wall; see
+//!   `external/slh-dsa/VENDOR-SNORKEL.md`. The copy carries two
+//!   documented build-only changes and no logic changes.
 //!
 //! The snorkel never signs and never generates keys, so none of that
 //! surface is reproduced — only verification.
@@ -48,7 +52,7 @@
 //! SLH-DSA : try_verify_with_context( msg, context = domain )
 //! ```
 
-use ed25519_dalek::{Signature as EdSignature, Verifier as _, VerifyingKey as EdVerifyingKey};
+use ed25519_dalek::{Signature as EdSignature, VerifyingKey as EdVerifyingKey};
 use slh_dsa::{Sha2_128s, Signature as SlhSignature, VerifyingKey as SlhVerifyingKey};
 
 use crate::verify::HybridVerify;
