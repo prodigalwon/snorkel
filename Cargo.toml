@@ -6,6 +6,7 @@ members = [
     "crates/snorkel-janitor",
     "crates/snorkel-janitor-core",
     "crates/snorkel-sync",
+    "external/slh-dsa",
 ]
 
 [workspace.package]
