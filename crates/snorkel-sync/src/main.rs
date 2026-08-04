@@ -6,11 +6,13 @@
 //! chain-adjacent dependency (snorkel-dns stays lean and serves only
 //! from the local store).
 //!
-//! ## v0 status: OBSERVE MODE, on purpose
+//! ## v0 status: OBSERVE MODE
 //!
-//! Client rule 1 says no served byte is trusted before verification,
-//! and the hybrid-PQ justification verifier is not implemented yet. So
-//! this binary deliberately REFUSES to advance the trust checkpoint:
+//! The justification verifier now works (`verify` + `hybrid`, proven
+//! against a real justification from a running node), but the follow
+//! loop that adopts anchors and rolls the checkpoint is not wired yet.
+//! Until it is, this binary deliberately REFUSES to advance the trust
+//! checkpoint:
 //! it handshakes (version gate enforced), polls the finalized head on
 //! the heartbeat, evaluates client rules 2/3 against the held
 //! checkpoint, logs what it would do — and stops short of adoption,
@@ -118,7 +120,7 @@ fn cycle(courier: &Courier, held: Option<&checkpoint::Checkpoint>) {
     println!(
         "snorkel-sync[observe]: courier finalized={} (spec {:#x}, schema {}) \
          held={held_height} verdict={verdict:?} freshness={freshness:?} — \
-         NOT adopting: justification verifier not yet implemented",
+         NOT adopting: follow loop not wired yet",
         head.height, info.spec_version, info.schema_version,
     );
 

@@ -31,15 +31,16 @@
 //! one — the safe direction. Revisit if a legitimate justification is
 //! ever seen to fail it.
 //!
-//! ## Crypto sourcing: DEFERRED DECISION (behind [`HybridVerify`])
+//! ## Crypto: independent, in this repo
 //!
-//! The actual both-must-verify primitive lives in Rostro's KAT-pinned
-//! `rostro-hybrid-sig` (Apache-2.0), which itself path-depends on the
-//! vendored `slh-dsa`. Wiring that into this separate repo is a
-//! supply-chain choice (git dep to Rostro / publish the two crates /
-//! vendor with a KAT-sync check) that shapes how the whole verifier SDK
-//! ships — the user's call. Until then the quorum logic (where the bugs
-//! hide) is complete and tested against this trait.
+//! [`HybridVerify`] is implemented by [`crate::hybrid::HybridVerifier`],
+//! the snorkel's own verify-only implementation over crates.io
+//! `ed25519-dalek` plus the vendored `slh-dsa` in `external/`. No
+//! dependency on Rostro's `rostro-hybrid-sig`; the trait stays so the
+//! quorum logic remains testable with a stub. Agreement with the chain
+//! is pinned by two fixtures: a signature from the chain's signer
+//! (`hybrid.rs`) and a real justification from a running node
+//! (`live_fixture_tests` below).
 
 use parity_scale_codec::{Compact, Decode, Input};
 
@@ -407,5 +408,122 @@ mod tests {
         assert_eq!(&payload[33..37], &42u32.to_le_bytes());
         assert_eq!(&payload[37..45], &9u64.to_le_bytes());
         assert_eq!(&payload[45..53], &5u64.to_le_bytes());
+    }
+}
+
+/// End-to-end verification against a REAL justification captured from a
+/// running gemini node. This is the test the whole crate exists for:
+/// it exercises the wire decode, the signed-payload construction, the
+/// quorum arithmetic, and the hybrid crypto together, against bytes the
+/// chain actually produced rather than bytes we invented.
+///
+/// Fixture: `vectors/justification_dev_block1.txt`, captured
+/// 2026-08-04 via `sync_justification(1)` on `gemini-node --dev`.
+/// Lines: block hash, block number, set_id, justification hex, then
+/// one `pubkey_hex weight` per authority.
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod live_fixture_tests {
+    use super::*;
+    use crate::hybrid::HybridVerifier;
+    use crate::wire::from_hex;
+
+    struct Fixture {
+        block_hash: H256,
+        number: u32,
+        set_id: u64,
+        justification: Vec<u8>,
+        authorities: Vec<Authority>,
+    }
+
+    fn fixture() -> Fixture {
+        let raw = include_str!("../vectors/justification_dev_block1.txt");
+        let mut lines = raw.lines();
+        let bh = from_hex(lines.next().unwrap().trim()).unwrap();
+        let mut block_hash = [0u8; 32];
+        block_hash.copy_from_slice(&bh);
+        let number: u32 = lines.next().unwrap().trim().parse().unwrap();
+        let set_id: u64 = lines.next().unwrap().trim().parse().unwrap();
+        let justification = from_hex(lines.next().unwrap().trim()).unwrap();
+        let authorities = lines
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let mut it = l.split_whitespace();
+                let public = from_hex(it.next().unwrap()).unwrap();
+                let weight: u64 = it.next().unwrap().parse().unwrap();
+                Authority { public, weight }
+            })
+            .collect();
+        Fixture { block_hash, number, set_id, justification, authorities }
+    }
+
+    #[test]
+    fn verifies_a_real_chain_justification() {
+        let f = fixture();
+        let r = verify_justification(
+            &HybridVerifier,
+            &f.justification,
+            f.set_id,
+            &f.authorities,
+            &f.block_hash,
+            f.number,
+        );
+        assert_eq!(
+            r,
+            Ok(()),
+            "failed to verify a genuine justification from a running node"
+        );
+    }
+
+    /// The set_id is inside the signed payload, so a wrong one must
+    /// make every signature fail — proving the payload really is
+    /// scoped to the authority set.
+    #[test]
+    fn wrong_set_id_fails() {
+        let f = fixture();
+        let r = verify_justification(
+            &HybridVerifier,
+            &f.justification,
+            f.set_id + 1,
+            &f.authorities,
+            &f.block_hash,
+            f.number,
+        );
+        assert!(matches!(r, Err(VerifyError::InsufficientWeight { .. })));
+    }
+
+    /// A courier substituting a different authority set must not be
+    /// able to make the justification verify.
+    #[test]
+    fn foreign_authority_set_fails() {
+        let f = fixture();
+        let fake = vec![Authority { public: vec![0xaa; 64], weight: 1 }];
+        let r = verify_justification(
+            &HybridVerifier,
+            &f.justification,
+            f.set_id,
+            &fake,
+            &f.block_hash,
+            f.number,
+        );
+        assert!(matches!(r, Err(VerifyError::InsufficientWeight { .. })));
+    }
+
+    /// Tampering with any signature byte must break the quorum.
+    #[test]
+    fn tampered_signature_fails() {
+        let f = fixture();
+        let mut j = f.justification.clone();
+        let n = j.len();
+        j[n - 100] ^= 0x01;
+        let r = verify_justification(
+            &HybridVerifier,
+            &j,
+            f.set_id,
+            &f.authorities,
+            &f.block_hash,
+            f.number,
+        );
+        assert!(r.is_err());
     }
 }
