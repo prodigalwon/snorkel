@@ -1,4 +1,4 @@
-//! Client rules 2 and 3 (SYNC-CONTRACT.md §7) as pure functions.
+//! Client rules 2 and 3 (SYNC-SPEC.md §7) as pure functions.
 //!
 //! Rule 2 — height monotonicity + no-future: never adopt an anchor
 //! below the held checkpoint, never adopt one above the

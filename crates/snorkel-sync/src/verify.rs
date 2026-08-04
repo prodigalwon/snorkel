@@ -1,4 +1,4 @@
-//! GRANDPA justification verification (SYNC-CONTRACT.md D1).
+//! GRANDPA justification verification (SYNC-SPEC.md D1).
 //!
 //! Grounded against the Rostro fork 2026-08-03. The finality scheme is
 //! `rostro_hybrid` = **ed25519 + SLH-DSA-SHA2-128s, both-must-verify**
@@ -17,7 +17,7 @@
 //! A justification finalizes its commit target iff precommits from a
 //! set of distinct authorities whose summed weight is **> 2/3 of total
 //! weight** each verify over that payload. Byte layout of the wire
-//! justification is mirrored locally (contract discipline: no `sp-*`
+//! justification is mirrored locally (spec discipline: no `sp-*`
 //! graph), decoding only the prefix we need — `round` + `commit` —
 //! and ignoring the trailing `votes_ancestries` header list.
 //!

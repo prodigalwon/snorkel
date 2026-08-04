@@ -1,7 +1,7 @@
 //! # snorkel-sync
 //!
 //! Checkpoint finality-follower and verified replica maintainer for
-//! the Rostro resolution sync contract (SYNC-CONTRACT.md). One of the
+//! the Rostro resolution sync spec (SYNC-SPEC.md). One of the
 //! three snorkel processes; the quarantine zone for every
 //! chain-adjacent dependency (snorkel-dns stays lean and serves only
 //! from the local store).
@@ -115,10 +115,10 @@ fn cycle(courier: &Courier, held: Option<&checkpoint::Checkpoint>) {
     let freshness = serve_state(verified_head, held_height);
 
     println!(
-        "snorkel-sync[observe]: courier finalized={} (contract {:#x}, schema {}) \
+        "snorkel-sync[observe]: courier finalized={} (spec {:#x}, schema {}) \
          held={held_height} verdict={verdict:?} freshness={freshness:?} — \
          NOT adopting: justification verifier not yet implemented",
-        head.height, info.contract_version, info.schema_version,
+        head.height, info.spec_version, info.schema_version,
     );
 
     if matches!(verdict, AnchorVerdict::AboveVerifiedHead) {

@@ -14,7 +14,7 @@ use parity_scale_codec::Decode;
 use serde_json::{json, Value};
 
 use crate::wire::{
-    from_hex, FinalizedHead, HandshakeInfo, JustifiedHeader, CONTRACT_VERSION, SCHEMA_VERSION,
+    from_hex, FinalizedHead, HandshakeInfo, JustifiedHeader, SPEC_VERSION, SCHEMA_VERSION,
 };
 
 pub struct Courier {
@@ -28,7 +28,7 @@ pub enum CourierError {
     Http(String),
     Rpc { code: i64, message: String },
     Envelope(String),
-    /// Contract major-version mismatch: refuse the courier outright.
+    /// Spec major-version mismatch: refuse the courier outright.
     VersionRefused { server: u32, client: u32 },
     /// Schema outside our N/N+1 tolerance.
     SchemaRefused { server: u16, client: u16 },
@@ -92,10 +92,10 @@ impl Courier {
     /// major-mismatch = refuse; schema outside {N, N+1} = refuse.
     pub fn handshake(&self) -> Result<HandshakeInfo, CourierError> {
         let info: HandshakeInfo = self.call_scale("sync_handshake", json!([]))?;
-        if info.contract_version >> 16 != CONTRACT_VERSION >> 16 {
+        if info.spec_version >> 16 != SPEC_VERSION >> 16 {
             return Err(CourierError::VersionRefused {
-                server: info.contract_version,
-                client: CONTRACT_VERSION,
+                server: info.spec_version,
+                client: SPEC_VERSION,
             });
         }
         let s = info.schema_version;
@@ -132,9 +132,9 @@ mod tests {
     use super::*;
     use crate::wire::Retention;
 
-    fn info(contract_version: u32, schema_version: u16) -> HandshakeInfo {
+    fn info(spec_version: u32, schema_version: u16) -> HandshakeInfo {
         HandshakeInfo {
-            contract_version,
+            spec_version,
             schema_version,
             genesis_hash: [0; 32],
             finalized_height: 0,
@@ -146,10 +146,10 @@ mod tests {
 
     /// The gate logic, extracted for testing without a server.
     fn gate(i: &HandshakeInfo) -> Result<(), CourierError> {
-        if i.contract_version >> 16 != CONTRACT_VERSION >> 16 {
+        if i.spec_version >> 16 != SPEC_VERSION >> 16 {
             return Err(CourierError::VersionRefused {
-                server: i.contract_version,
-                client: CONTRACT_VERSION,
+                server: i.spec_version,
+                client: SPEC_VERSION,
             });
         }
         let s = i.schema_version;
@@ -161,18 +161,18 @@ mod tests {
 
     #[test]
     fn version_gate() {
-        assert!(gate(&info(CONTRACT_VERSION, SCHEMA_VERSION)).is_ok());
+        assert!(gate(&info(SPEC_VERSION, SCHEMA_VERSION)).is_ok());
         // Minor revisions are additive: accepted.
-        assert!(gate(&info(CONTRACT_VERSION + 5, SCHEMA_VERSION)).is_ok());
+        assert!(gate(&info(SPEC_VERSION + 5, SCHEMA_VERSION)).is_ok());
         // Major bump: refused.
         assert!(matches!(
             gate(&info(0x0002_0000, SCHEMA_VERSION)),
             Err(CourierError::VersionRefused { .. })
         ));
         // Schema N+1 tolerated, N+2 refused.
-        assert!(gate(&info(CONTRACT_VERSION, SCHEMA_VERSION + 1)).is_ok());
+        assert!(gate(&info(SPEC_VERSION, SCHEMA_VERSION + 1)).is_ok());
         assert!(matches!(
-            gate(&info(CONTRACT_VERSION, SCHEMA_VERSION + 2)),
+            gate(&info(SPEC_VERSION, SCHEMA_VERSION + 2)),
             Err(CourierError::SchemaRefused { .. })
         ));
     }

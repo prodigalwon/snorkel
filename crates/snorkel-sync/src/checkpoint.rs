@@ -1,4 +1,4 @@
-//! The trust checkpoint (SYNC-CONTRACT.md §5).
+//! The trust checkpoint (SYNC-SPEC.md §5).
 //!
 //! `{format_version, genesis_hash, height, block_hash, state_root,
 //! set_id, authorities, self_hash}` — SCALE on disk, never
@@ -16,7 +16,7 @@ use crate::wire::H256;
 
 type Blake2b256 = Blake2b<U32>;
 
-/// Checkpoint format version (independent of the contract version:
+/// Checkpoint format version (independent of the spec version:
 /// this struct is client-persisted state, not wire).
 pub const CHECKPOINT_FORMAT: u16 = 1;
 

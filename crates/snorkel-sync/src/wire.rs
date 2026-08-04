@@ -1,7 +1,7 @@
-//! Frozen wire structs of the Rostro sync contract (SYNC-CONTRACT.md §6).
+//! Frozen wire structs of the Rostro sync spec (SYNC-SPEC.md §6).
 //!
 //! These are DELIBERATE local mirrors of the server-side definitions in
-//! Rostro's `rostro-sync-rpc` crate: the contract requires clients to
+//! Rostro's `rostro-sync-rpc` crate: the spec requires clients to
 //! define the frozen structs locally rather than import the chain
 //! workspace's dependency graph. Drift between the two copies is caught
 //! by the shared golden vectors (the hex constants in this file's tests
@@ -14,14 +14,14 @@
 
 use parity_scale_codec::{Decode, Encode};
 
-/// 32-byte hash, contract-side. Kept as a plain array so no chain
+/// 32-byte hash, spec-side. Kept as a plain array so no chain
 /// crate is needed.
 pub type H256 = [u8; 32];
 
-/// Contract version this client implements: major.minor packed as
+/// Spec version this client implements: major.minor packed as
 /// upper/lower 16 bits. A courier with a different MAJOR is refused
-/// (contract §2).
-pub const CONTRACT_VERSION: u32 = 0x0001_0000;
+/// (spec §2).
+pub const SPEC_VERSION: u32 = 0x0001_0000;
 
 /// Storage schema version this client understands. Dual-tolerance rule:
 /// a release must accept N and N+1.
@@ -35,7 +35,7 @@ pub struct Retention {
 
 #[derive(Encode, Decode, Clone, PartialEq, Eq, Debug)]
 pub struct HandshakeInfo {
-    pub contract_version: u32,
+    pub spec_version: u32,
     pub schema_version: u16,
     pub genesis_hash: H256,
     pub finalized_height: u64,
@@ -127,7 +127,7 @@ mod tests {
 
     /// Golden vectors shared byte-for-byte with the server crate
     /// (`rostro-sync-rpc` tests). If either side drifts, its copy of
-    /// these constants fails, and the drift is a contract event.
+    /// these constants fails, and the drift is a spec event.
     #[test]
     fn scale_wire_golden_vectors() {
         let retention = Retention { justification_cadence: 512, state_window: 7200 };
@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn envelope_roundtrip() {
         let info = HandshakeInfo {
-            contract_version: CONTRACT_VERSION,
+            spec_version: SPEC_VERSION,
             schema_version: SCHEMA_VERSION,
             genesis_hash: [9; 32],
             finalized_height: 7,

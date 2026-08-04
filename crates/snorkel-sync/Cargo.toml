@@ -3,7 +3,7 @@ name = "snorkel-sync"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
-description = "Checkpoint finality-follower and verified replica maintainer for the Rostro resolution sync contract (SYNC-CONTRACT.md). The quarantine zone: all chain-adjacent dependencies live here, never in snorkel-dns."
+description = "Checkpoint finality-follower and verified replica maintainer for the Rostro resolution sync spec (SYNC-SPEC.md). The quarantine zone: all chain-adjacent dependencies live here, never in snorkel-dns."
 
 [[bin]]
 name = "snorkel-sync"
