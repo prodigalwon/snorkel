@@ -1,0 +1,19 @@
+[package]
+name = "substrate-trie-verify"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Minimal verify-only subset of Substrate's state-trie codec, vendored so the snorkel can check state proofs without the sp-* dependency graph. See VENDOR.md."
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+codec = { package = "parity-scale-codec", version = "3", default-features = false }
+hash-db = { version = "0.16.0", default-features = false }
+trie-db = { version = "0.31.0", default-features = false }
+memory-db = { version = "0.34.0", default-features = false }
+blake2 = { version = "0.10", default-features = false }
+hash256-std-hasher = { version = "0.15.2", default-features = false }
+thiserror = "1"

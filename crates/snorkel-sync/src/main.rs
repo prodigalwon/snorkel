@@ -27,6 +27,7 @@
 mod checkpoint;
 mod courier;
 mod hybrid;
+mod proof;
 mod rules;
 mod store;
 mod verify;
