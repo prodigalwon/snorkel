@@ -136,7 +136,17 @@ pub fn decode_commit(justification: &[u8]) -> Result<Commit, VerifyError> {
             .map_err(|e| VerifyError::Decode(format!("precommit count: {e}")))?
             .0,
     );
-    let mut precommits = Vec::with_capacity(count as usize);
+    // Rule 1: the courier is an adversary. `count` is attacker-
+    // controlled (Compact<u32>, up to ~4.3e9); it MUST NOT drive an
+    // eager allocation. Cap the reserve at a sane authority-set bound —
+    // the loop still reads exactly `count` items but fails fast on
+    // input underrun, so a lie about the count only wastes the caller's
+    // own bytes, never memory. Each real precommit is 8020+ wire bytes,
+    // so a genuine `count` is bounded by the justification length
+    // anyway.
+    const PRECOMMIT_RESERVE_CAP: u32 = 100_000;
+    let reserve = count.min(PRECOMMIT_RESERVE_CAP) as usize;
+    let mut precommits = Vec::with_capacity(reserve);
     for _ in 0..count {
         let ph = read_h256(&mut input)?;
         let pn = u32::decode(&mut input)
@@ -369,6 +379,23 @@ mod tests {
             verify_justification(&MockVerify, &j, 5, &[], &target, 100),
             Err(VerifyError::EmptySet)
         );
+    }
+
+    #[test]
+    fn absurd_precommit_count_does_not_preallocate() {
+        // A hostile courier claims ~4.29e9 precommits in a tiny blob.
+        // Before the fix this drove Vec::with_capacity(4.29e9) -> OOM
+        // abort. Now decoding just fails fast on input underrun (the
+        // promised precommits aren't there), returning a decode error
+        // and touching no unbounded memory.
+        let mut buf = Vec::new();
+        9u64.encode_to(&mut buf); // round
+        buf.extend_from_slice(&[7u8; 32]); // target_hash
+        100u32.encode_to(&mut buf); // target_number
+        Compact(u32::MAX).encode_to(&mut buf); // count = 4.29e9, a lie
+        // ...and no precommit bytes follow.
+        let err = decode_commit(&buf).unwrap_err();
+        assert!(matches!(err, VerifyError::Decode(_)));
     }
 
     #[test]
