@@ -14,6 +14,7 @@ snorkel-common = { path = "../snorkel-common" }
 parity-scale-codec = { version = "3", features = ["derive"] }
 blake2 = "0.10"
 sha3 = "0.10"
+twox-hash = "1.6.3"
 redb = "2"
 ureq = { version = "3", features = ["json"] }
 serde = { version = "1", features = ["derive"] }

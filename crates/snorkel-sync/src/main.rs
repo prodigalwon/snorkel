@@ -36,6 +36,7 @@ mod courier;
 mod follow;
 mod hybrid;
 mod proof;
+mod rns_keys;
 mod rules;
 mod store;
 mod verify;
