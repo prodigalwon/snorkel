@@ -72,6 +72,12 @@ pub enum Status {
     NotFound = 2,
     /// Cannot answer right now. MUST become SERVFAIL, never NXDOMAIN.
     Unavailable = 3,
+    /// The name exists and is live, but holds no record of the
+    /// requested type. In DNS terms NODATA — NOERROR with an empty
+    /// answer — which tells a resolver the name is real and it may be
+    /// worth asking for another type. Serving NXDOMAIN here would
+    /// wrongly say the name itself does not exist.
+    NoData = 4,
 }
 
 impl Status {
@@ -80,6 +86,7 @@ impl Status {
             1 => Some(Self::Found),
             2 => Some(Self::NotFound),
             3 => Some(Self::Unavailable),
+            4 => Some(Self::NoData),
             _ => None,
         }
     }

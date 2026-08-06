@@ -1,13 +1,14 @@
 [workspace]
 resolver = "3"
+# Vendored third-party crates: path dependencies, but not ours to lint or
+# test. Their own KAT suites are run deliberately, not via --workspace.
+exclude = ["external/slh-dsa", "external/substrate-trie"]
 members = [
     "crates/snorkel-common",
     "crates/snorkel-dns",
     "crates/snorkel-janitor",
     "crates/snorkel-janitor-core",
     "crates/snorkel-sync",
-    "external/slh-dsa",
-    "external/substrate-trie",
 ]
 
 [workspace.package]
