@@ -1617,6 +1617,7 @@ dependencies = [
  "redb",
  "serde",
  "serde_json",
+ "sha3",
  "slh-dsa",
  "snorkel-common",
  "substrate-trie-verify",

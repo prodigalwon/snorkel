@@ -29,6 +29,7 @@
 //! Env: `SNORKEL_STORE` (default `./snorkel-sync.redb`),
 //! `SNORKEL_CHECKPOINT` (SCALE checkpoint file, first run only).
 
+mod anchor;
 mod checkpoint;
 mod courier;
 mod follow;
