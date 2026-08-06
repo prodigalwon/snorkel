@@ -30,6 +30,7 @@
 //! `SNORKEL_CHECKPOINT` (SCALE checkpoint file, first run only).
 
 mod anchor;
+mod bootstrap;
 mod checkpoint;
 mod courier;
 mod follow;
