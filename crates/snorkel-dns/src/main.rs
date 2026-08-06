@@ -1,7 +1,7 @@
 //! # localsnorkel
 //!
-//! Reference DNS server for PNS 2.0, deployed on the **same box** as a
-//! pns-node solochain or paseo-node parachain.  Communication with the
+//! Reference DNS server for RNS, deployed on the **same box** as a
+//! Rostro node.  Communication with the
 //! chain is over plain HTTP on `127.0.0.1:9944` — kernel-resident loopback,
 //! no TLS handshake, no nginx hop, no network round-trip on cache miss.
 //! That property is the *defining* invariant of the localsnorkel pattern,

@@ -1,4 +1,4 @@
-//! Synchronous JSON-RPC client for querying PNS chain state.
+//! Synchronous JSON-RPC client for querying RNS chain state.
 //!
 //! Uses HTTP POST to the node's RPC endpoint. Connection is kept alive
 //! via HTTP keep-alive. If the connection drops, `ureq` reconnects on
@@ -48,7 +48,7 @@ impl RpcClient {
         current
     }
 
-    /// Call `pns_lookupByName` for web2 record types.
+    /// Call `rns_lookupByName` for web2 record types.
     /// Returns a `NameRecord` populated with whatever the chain has,
     /// or `None` if the name doesn't exist or has no web records.
     pub fn lookup_name(&self, label: &str) -> Result<Option<NameRecord>, RpcError> {
@@ -56,7 +56,7 @@ impl RpcClient {
         let body = json!({
             "jsonrpc": "2.0",
             "id": id,
-            "method": "pns_lookupByName",
+            "method": "rns_lookupByName",
             "params": [label, [WIRE_A, WIRE_AAAA, WIRE_TXT]]
         });
 
